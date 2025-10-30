@@ -1,0 +1,47 @@
+export default [
+  {
+    "code": "CN",
+    "name": "中国",
+    "dialCode": "86",
+    "flag": "cn",
+    "pattern": "^(\\d{3})(\\d{4})(\\d{4})$",
+    "placeholder": "138 1234 5678",
+    "maxLength": 11
+  },
+  {
+    "code": "US",
+    "name": "美国",
+    "dialCode": "1201",
+    "flag": "us",
+    "pattern": "^(\\d{3})(\\d{3})(\\d{4})$",
+    "placeholder": "(555) 123-4567",
+    "maxLength": 10
+  },
+  {
+    "code": "GB",
+    "name": "英国",
+    "dialCode": "44",
+    "flag": "gb",
+    "pattern": "^(\\d{4})(\\d{3})(\\d{3})$",
+    "placeholder": "07400 123456",
+    "maxLength": 10
+  },
+  {
+    "code": "TW",
+    "name": "中国台湾",
+    "dialCode": "886",
+    "flag": "tw",
+    "pattern": "^(\\d{3})(\\d{3})(\\d{4})$",
+    "placeholder": "123 456 789",
+    "maxLength": 9
+  },
+  {
+    "code": "HK",
+    "name": "中国香港",
+    "dialCode": "852",
+    "flag": "hk",
+    "pattern": "^(\\d{3})(\\d{3})(\\d{4})$",
+    "placeholder": "123 456 789",
+    "maxLength": 9
+  }
+];
