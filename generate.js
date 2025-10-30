@@ -577,7 +577,8 @@ function buildFormatFunctions(patternStr, maxLength, countryCode) {
 // 尝试从 restcountries 获取拨号前缀映射（cca2 -> dial code 不带 +）
 async function fetchFromRestCountries() {
   try {
-    const res = await fetch('https://restcountries.com/v3.1/all', { timeout: 15000 });
+    // 注意：不要传入 node-fetch v3 不支持的 timeout 选项
+    const res = await fetch('https://restcountries.com/v3.1/all');
     if (!res.ok) {
       console.error('restcountries 请求失败', res.status);
       return {};
@@ -591,11 +592,11 @@ async function fetchFromRestCountries() {
       if (!idd) continue;
       const root = idd.root || '';
       const suffixes = Array.isArray(idd.suffixes) && idd.suffixes.length ? idd.suffixes : [''];
-      // 取第一个后缀，常见情况足够
       const suffix = suffixes[0] || '';
       const code = (root + suffix).replace('+', '').replace(/\D/g, '');
       if (code) map[cca2] = code;
     }
+    console.debug('restcountries 拨号前缀条目数：', Object.keys(map).length);
     return map;
   } catch (e) {
     console.error('restcountries fetch 错误:', e.message || e);
@@ -607,8 +608,10 @@ async function fetchFromRestCountries() {
 async function fetchFromMledoze() {
   try {
     const url = 'https://raw.githubusercontent.com/mledoze/countries/master/countries.json';
-    const res = await fetch(url, { timeout: 15000 });
+    // 不传 timeout，避免 node-fetch v3 不支持的选项导致异常
+    const res = await fetch(url);
     if (!res.ok) {
+      console.error('mledoze 请求失败', res.status);
       return {};
     }
     const data = await res.json();
@@ -616,17 +619,43 @@ async function fetchFromMledoze() {
     for (const item of data) {
       const cca2 = (item.cca2 || '').toUpperCase();
       if (!cca2) continue;
-      // mledoze 里可能有 "callingCodes" 或 "callingCode" 之类字段；尝试多种可能
       const calling = item.callingCodes || item.callingCode || item.calling || item['callingCode'];
       if (!calling) continue;
       const first = Array.isArray(calling) ? calling[0] : calling;
       const code = String(first || '').replace('+', '').replace(/\D/g, '');
       if (code) map[cca2] = code;
     }
+    console.debug('mledoze 拨号前缀条目数：', Object.keys(map).length);
     return map;
   } catch (e) {
+    console.error('mledoze fetch 错误:', e.message || e);
     return {};
   }
+}
+
+async function fetchDialCodeMap() {
+  // 优先 restcountries
+  let map = await fetchFromRestCountries();
+  if (Object.keys(map).length >= 100) {
+    // 如果拿到了较完整的数据，直接返回（并合并本地覆盖）
+    const merged = { ...localOverrides, ...map };
+    console.debug('使用 restcountries 数据，合并后条目数：', Object.keys(merged).length);
+    return merged;
+  }
+
+  // 尝试 mledoze 备用源并合并
+  const mled = await fetchFromMledoze();
+  map = { ...map, ...mled };
+
+  // 如果仍然很小，记录警告
+  if (Object.keys(map).length < 50) {
+    console.warn('警告：拨号前缀来源数据不足（只有', Object.keys(map).length, '条）。将使用本地覆盖作为回退。');
+  }
+
+  // 合并本地覆盖，确保关键国家有值
+  const final = { ...localOverrides, ...map };
+  console.debug('最终拨号前缀条目数：', Object.keys(final).length);
+  return final;
 }
 
 // 小型本地覆盖（处理常见或特殊情况）
