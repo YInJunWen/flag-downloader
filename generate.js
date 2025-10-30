@@ -669,27 +669,6 @@ const localOverrides = {
   "XK": "383" // 科索沃常用 +383
 };
 
-async function fetchDialCodeMap() {
-  // 优先 restcountries
-  let map = await fetchFromRestCountries();
-  if (Object.keys(map).length >= 100) {
-    // 如果拿到了较完整的数据，直接返回
-    return { ...localOverrides, ...map };
-  }
-
-  // 尝试 mledoze 备用源并合并
-  const mled = await fetchFromMledoze();
-  map = { ...map, ...mled };
-
-  // 如果仍然很小，记录警告
-  if (Object.keys(map).length < 50) {
-    console.warn('警告：拨号前缀来源数据不足（只有', Object.keys(map).length, '条）。将使用本地覆盖作为回退。');
-  }
-
-  // 合并本地覆盖，确保关键国家有值
-  return { ...localOverrides, ...map };
-}
-
 (async () => {
   const dialMap = await fetchDialCodeMap();
 
