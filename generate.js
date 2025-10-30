@@ -4,7 +4,7 @@ import { join } from 'path';
 import fetch from 'node-fetch';
 
 // 1. 读取 ISO 3166-1 alpha-2 标准列表
-const countries = JSON.parse(readFileSync('data/iso3166-alpha2.json', 'utf8'));
+const countries = JSON.parse(readFileSync('./data/iso3166-alpha2.json', 'utf8'));
 
 // 2. 从 libphonenumber 获取真实号码格式
 const phoneFormats = {
