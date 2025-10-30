@@ -1,6 +1,7 @@
 // generate.js
 import { writeFileSync, mkdirSync } from 'fs';
 import fetch from 'node-fetch';
+import * as libph from 'google-libphonenumber';
 
 // 1. ISO 3166-1 alpha-2 列表（中文名）
 const countries = [
@@ -667,25 +668,46 @@ async function fetchFromMledoze() {
 }
 
 async function fetchDialCodeMap() {
-  // 优先 restcountries
+  // 先尝试用 google-libphonenumber（本地库、无需网络）
+  try {
+    const phoneUtil = libph.PhoneNumberUtil.getInstance();
+    const map = {};
+    for (const c of countries) {
+      try {
+        const cc = phoneUtil.getCountryCodeForRegion(c.code);
+        if (typeof cc === 'number' && cc > 0) {
+          map[c.code] = String(cc);
+        }
+      } catch (e) {
+        // 个别 region 可能抛错，忽略继续
+      }
+    }
+    console.debug('libphonenumber 本地映射条目数：', Object.keys(map).length);
+    // 如果拿到比较完整的数据，直接返回（合并 localOverrides）
+    if (Object.keys(map).length >= 100) {
+      return { ...localOverrides, ...map };
+    }
+    // 否则继续降级到网络来源并合并本地覆盖
+    console.debug('libphonenumber 未覆盖全部，继续使用网络回退源合并');
+  } catch (e) {
+    console.debug('google-libphonenumber 使用失败：', e && e.message ? e.message : e);
+  }
+
+  // 原来的网络回退逻辑（restcountries / mledoze）
   let map = await fetchFromRestCountries();
   if (Object.keys(map).length >= 100) {
-    // 如果拿到了较完整的数据，直接返回（并合并本地覆盖）
     const merged = { ...localOverrides, ...map };
     console.debug('使用 restcountries 数据，合并后条目数：', Object.keys(merged).length);
     return merged;
   }
 
-  // 尝试 mledoze 备用源并合并
   const mled = await fetchFromMledoze();
   map = { ...map, ...mled };
 
-  // 如果仍然很小，记录警告
   if (Object.keys(map).length < 50) {
     console.warn('警告：拨号前缀来源数据不足（只有', Object.keys(map).length, '条）。将使用本地覆盖作为回退。');
   }
 
-  // 合并本地覆盖，确保关键国家有值
   const final = { ...localOverrides, ...map };
   console.debug('最终拨号前缀条目数：', Object.keys(final).length);
   return final;
