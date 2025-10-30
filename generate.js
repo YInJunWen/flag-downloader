@@ -574,13 +574,39 @@ function buildFormatFunctions(patternStr, maxLength, countryCode) {
   return { pattern, format, formatInput, validate };
 }
 
-// 尝试从 restcountries 获取拨号前缀映射（cca2 -> dial code 不带 +）
+// 尝试从 restcountries 获取拨号前缀映射（优先 v2 的 callingCodes，再降级到 v3 的 idd）
 async function fetchFromRestCountries() {
+  // 尝试 v2（有 callingCodes 字段）
   try {
-    // 注意：不要传入 node-fetch v3 不支持的 timeout 选项
-    const res = await fetch('https://restcountries.com/v3.1/all');
+    const urlV2 = 'https://restcountries.com/v2/all?fields=alpha2Code;callingCodes';
+    const resV2 = await fetch(urlV2, { headers: { Accept: 'application/json' } });
+    if (resV2.ok) {
+      const data = await resV2.json();
+      const map = {};
+      for (const item of data) {
+        const cca2 = (item.alpha2Code || item.alpha2 || '').toUpperCase();
+        if (!cca2) continue;
+        const calling = item.callingCodes || item.callingCode;
+        if (!calling) continue;
+        const first = Array.isArray(calling) ? calling[0] : calling;
+        const code = String(first || '').replace('+', '').replace(/\D/g, '');
+        if (code) map[cca2] = code;
+      }
+      console.debug('restcountries v2 拨号前缀条目数：', Object.keys(map).length);
+      if (Object.keys(map).length) return map;
+    } else {
+      console.debug('restcountries v2 请求非 200，status=', resV2.status);
+    }
+  } catch (e) {
+    console.debug('restcountries v2 fetch 错误:', e.message || e);
+  }
+
+  // 降级到 v3（使用 idd.root + idd.suffixes）
+  try {
+    const urlV3 = 'https://restcountries.com/v3.1/all';
+    const res = await fetch(urlV3, { headers: { Accept: 'application/json' } });
     if (!res.ok) {
-      console.error('restcountries 请求失败', res.status);
+      console.error('restcountries v3 请求失败', res.status);
       return {};
     }
     const data = await res.json();
@@ -596,7 +622,7 @@ async function fetchFromRestCountries() {
       const code = (root + suffix).replace('+', '').replace(/\D/g, '');
       if (code) map[cca2] = code;
     }
-    console.debug('restcountries 拨号前缀条目数：', Object.keys(map).length);
+    console.debug('restcountries v3 拨号前缀条目数：', Object.keys(map).length);
     return map;
   } catch (e) {
     console.error('restcountries fetch 错误:', e.message || e);
@@ -604,12 +630,11 @@ async function fetchFromRestCountries() {
   }
 }
 
-// 备用：尝试从 mledoze 的静态 countries.json 获取 callingCodes（部分仓库托管在 raw.githubusercontent）
+// 备用：尝试从 mledoze 的静态 countries.json 获取 callingCodes（更宽松地查找字段）
 async function fetchFromMledoze() {
   try {
     const url = 'https://raw.githubusercontent.com/mledoze/countries/master/countries.json';
-    // 不传 timeout，避免 node-fetch v3 不支持的选项导致异常
-    const res = await fetch(url);
+    const res = await fetch(url, { headers: { Accept: 'application/json' } });
     if (!res.ok) {
       console.error('mledoze 请求失败', res.status);
       return {};
@@ -619,7 +644,15 @@ async function fetchFromMledoze() {
     for (const item of data) {
       const cca2 = (item.cca2 || '').toUpperCase();
       if (!cca2) continue;
-      const calling = item.callingCodes || item.callingCode || item.calling || item['callingCode'];
+      // mledoze 里可能有多种字段名
+      let calling = item.callingCodes || item.callingCode || item.calling || item.idd && item.idd.root
+        ? (() => {
+            const idd = item.idd || {};
+            const root = idd.root || '';
+            const suffixes = Array.isArray(idd.suffixes) && idd.suffixes.length ? idd.suffixes : [''];
+            return (root + suffixes[0]).replace('+', '');
+          })()
+        : null;
       if (!calling) continue;
       const first = Array.isArray(calling) ? calling[0] : calling;
       const code = String(first || '').replace('+', '').replace(/\D/g, '');
@@ -672,10 +705,13 @@ const localOverrides = {
 (async () => {
   const dialMap = await fetchDialCodeMap();
 
+  const missing = [];
   const entries = countries.map(c => {
     const fmt = phoneFormats[c.code] || { maxLength: 9, pattern: "^(\\d{3})(\\d{3})(\\d{3})$", placeholder: "123 456 789" };
     const funcs = buildFormatFunctions(fmt.pattern, fmt.maxLength, c.code);
-    const dialCode = (dialMap[c.code] || localOverrides[c.code] || '0').toString();
+    // 不再使用 '0' 作为默认，改为空字符串并记录缺失项，便于诊断/补充 localOverrides
+    const dialCode = (dialMap[c.code] || localOverrides[c.code] || '') .toString();
+    if (!dialCode) missing.push(c.code);
     return `  {
     code: '${c.code}',
     name: '${c.name}',
@@ -692,6 +728,10 @@ const localOverrides = {
 
   const output = `import { ref } from 'vue';\n\nconst countries = ref([\n${entries.join(',\n')}\n]);\n\nexport default countries;\n`;
   writeFileSync('countries.js', output, 'utf8');
+
+  if (missing.length) {
+    console.warn('以下国家未能解析到拨号前缀（请在 localOverrides 中补充或排查网络源）：', missing.join(', '));
+  }
 
   // 下载国旗 PNG 到 flags/
   mkdirSync('flags', { recursive: true });
