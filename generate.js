@@ -1,9 +1,8 @@
 // generate.js
-import { readFileSync, writeFileSync, mkdirSync } from 'fs';
-import { join } from 'path';
+import { writeFileSync, mkdirSync } from 'fs';
 import fetch from 'node-fetch';
 
-// 1. 读取 ISO 3166-1 alpha-2 标准列表
+// 1. ISO 3166-1 alpha-2 列表（中文名）
 const countries = [
   { "code": "AD", "name": "安道尔" },
   { "code": "AE", "name": "阿拉伯联合酋长国" },
@@ -255,10 +254,9 @@ const countries = [
   { "code": "ZA", "name": "南非" },
   { "code": "ZM", "name": "赞比亚" },
   { "code": "ZW", "name": "津巴布韦" }
-]
+];
 
-
-// 2. 从 libphonenumber 获取真实号码格式
+// 2. phoneFormats（来源于 libphonenumber，保持原始映射）
 const phoneFormats = {
   "AD": { maxLength: 6, pattern: "^(\\d{3})(\\d{3})$", placeholder: "123 456" },
   "AE": { maxLength: 9, pattern: "^(\\d{1})(\\d{3})(\\d{3})(\\d{3})$", placeholder: "50 123 4567" },
@@ -512,72 +510,129 @@ const phoneFormats = {
   "ZW": { maxLength: 9, pattern: "^(\\d{2})(\\d{3})(\\d{4})$", placeholder: "71 123 4567" }
 };
 
-function flagEmoji(code) {
-  return String.fromCodePoint(...code.split('').map(c => 0x1F1E6 + c.charCodeAt(0) - 65));
+// 辅助：从 patternStr 提取每组的最小长度（支持 {n} 和 {m,n}）
+function parseGroupMins(patternStr) {
+  const re = /\\d\\{(\\d+)(?:,(\\d+))?\\}/g;
+  const out = [];
+  for (const m of patternStr.matchAll(re)) {
+    out.push(parseInt(m[1], 10));
+  }
+  return out;
 }
 
-function buildFormatFunctions(patternStr, maxLength, placeholder) {
-  // patternStr 是字符串形式的正则，如 "^(\\d{3})(\\d{4})(\\d{4})$"
-  const groups = (patternStr.match(/\\d\{(\\d+)\\}/g) || []).map(g => parseInt(g.match(/\\{(\\d+)\\}/)[1]));
-  const total = groups.reduce((a, b) => a + b, 0);
+function buildFormatFunctions(patternStr, maxLength, countryCode) {
+  const pattern = new RegExp(patternStr);
+  const groupMins = parseGroupMins(patternStr);
+  const total = maxLength;
 
-  return {
-    pattern: new RegExp(patternStr),
-    format: `(number) => {
-      const cleaned = number.replace(/\\D/g, '');
-      // 使用 new RegExp(...) 以生成代码中正确的正则对象
-      const match = cleaned.match(new RegExp(${JSON.stringify(patternStr)}));
-      return match ? \`${groups.map((_, i) => `\${match[${i+1}]}`).join(' ')}\` : number;
-    }`,
-    formatInput: `(number) => {
-      const cleaned = number.replace(/\\D/g, '').slice(0, ${maxLength});
-      let result = '';
-      let pos = 0;
-      ${groups.map((size, i) => `
-      if (pos + ${size} <= cleaned.length) {
-        result += cleaned.slice(pos, pos + ${size}) + ' ';
-        pos += ${size};
-      } else {
-        result += cleaned.slice(pos);
-        break;
-      }`).join('\n      ')}
-      return result.trim();
-    }`,
-    validate: `(number) => number.replace(/\\D/g, '').length === ${total}`
-  };
+  const regexLiteral = '/' + pattern.source.replace(/\//g, '\\/') + '/';
+  const formatTemplate = groupMins.map((_, i) => `\${match[${i + 1}]}`).join(' ');
+
+  const format = `(number) => {
+    const cleaned = number.replace(/\\D/g, '');
+    const match = cleaned.match(${regexLiteral});
+    return match ? \`${formatTemplate}\` : number;
+  }`;
+
+  // formatInput 逐段拼接（实时输入格式化）
+  const sums = [];
+  for (let i = 0; i < groupMins.length; i++) {
+    sums.push(groupMins.slice(0, i + 1).reduce((a, b) => a + b, 0));
+  }
+
+  let formatInput = `(number) => {
+    const cleaned = number.replace(/\\D/g, '').slice(0, ${total});
+  `;
+  if (groupMins.length === 0) {
+    formatInput += `  return cleaned;\n}`;
+  } else {
+    formatInput += `  if (cleaned.length <= ${groupMins[0]}) return cleaned;\n`;
+    for (let i = 1; i < groupMins.length; i++) {
+      const upper = sums[i];
+      const parts = [];
+      for (let j = 0; j <= i; j++) {
+        const start = j === 0 ? 0 : sums[j - 1];
+        const end = sums[j];
+        parts.push(`\${cleaned.slice(${start}, ${end})}`);
+      }
+      formatInput += `  else if (cleaned.length <= ${upper}) return \`${parts.join(' ')}\`;\n`;
+    }
+    // 最后一段切到 total（处理可变长度组）
+    const finalParts = [];
+    for (let j = 0; j < groupMins.length; j++) {
+      const start = j === 0 ? 0 : sums[j - 1];
+      const end = j === groupMins.length - 1 ? total : sums[j];
+      finalParts.push(`\${cleaned.slice(${start}, ${end})}`);
+    }
+    formatInput += `  else return \`${finalParts.join(' ')}\`;\n}`;
+  }
+
+  const validate = countryCode === 'CN'
+    ? `(number) => { const cleaned = number.replace(/\\D/g, ''); return /^1[3-9]\\d{9}$/.test(cleaned); }`
+    : `(number) => { const cleaned = number.replace(/\\D/g, ''); return ${regexLiteral}.test(cleaned); }`;
+
+  return { pattern, format, formatInput, validate };
 }
 
-const entries = countries.map(c => {
-  const fmt = phoneFormats[c.code] || { maxLength: 9, pattern: "^(\\d{3})(\\d{3})(\\d{3})$", placeholder: "123 456 789" };
-  const { pattern, format, formatInput, validate } = buildFormatFunctions(fmt.pattern, fmt.maxLength, fmt.placeholder);
-  const dialCode = c.code === 'US' ? '1' : c.code === 'CN' ? '86' : '0'; // 实际应从 ITU 获取
+// 从 restcountries.com 获取拨号前缀映射（cca2 -> dial code 不带 +）
+async function fetchDialCodeMap() {
+  try {
+    const res = await fetch('https://restcountries.com/v3.1/all');
+    if (!res.ok) return {};
+    const data = await res.json();
+    const map = {};
+    for (const item of data) {
+      if (!item.cca2 || !item.idd) continue;
+      const root = item.idd.root || '';
+      const suffixes = Array.isArray(item.idd.suffixes) && item.idd.suffixes.length ? item.idd.suffixes : [''];
+      const suffix = suffixes[0] || '';
+      const code = (root + suffix).replace('+', '').replace(/\D/g, '');
+      if (code) map[item.cca2.toUpperCase()] = code;
+    }
+    return map;
+  } catch (e) {
+    return {};
+  }
+}
 
-  return `  {
+(async () => {
+  const dialMap = await fetchDialCodeMap();
+
+  const entries = countries.map(c => {
+    const fmt = phoneFormats[c.code] || { maxLength: 9, pattern: "^(\\d{3})(\\d{3})(\\d{3})$", placeholder: "123 456 789" };
+    const funcs = buildFormatFunctions(fmt.pattern, fmt.maxLength, c.code);
+    const dialCode = dialMap[c.code] || '0';
+    return `  {
     code: '${c.code}',
     name: '${c.name}',
     dialCode: '${dialCode}',
-    flag: '${flagEmoji(c.code)}',
-    pattern: /${pattern.source}/,
+    flag: '${c.code.toLowerCase()}',
+    pattern: /${funcs.pattern.source}/,
     placeholder: '${fmt.placeholder}',
     maxLength: ${fmt.maxLength},
-    format: ${format},
-    formatInput: ${formatInput},
-    validate: ${validate}
+    format: ${funcs.format},
+    formatInput: ${funcs.formatInput},
+    validate: ${funcs.validate}
   }`;
-});
+  });
 
-const output = `import { ref } from 'vue';\n\nconst countries = ref([\n${entries.join(',\n')}\n]);\n\nexport default countries;\n`;
-writeFileSync('countries.js', output, 'utf8');
+  const output = `import { ref } from 'vue';\n\nconst countries = ref([\n${entries.join(',\n')}\n]);\n\nexport default countries;\n`;
+  writeFileSync('countries.js', output, 'utf8');
 
-// 下载国旗
-mkdirSync('flags', { recursive: true });
-await Promise.all(countries.map(async c => {
-  const url = `http://flagcdn.com/16x12/${c.code.toLowerCase()}.png`;
-  const res = await fetch(url);
-  if (res.ok) {
-    const buffer = Buffer.from(await res.arrayBuffer());
-    writeFileSync(`flags/${c.code.toLowerCase()}.png`, buffer);
-  }
-}));
+  // 下载国旗 PNG 到 flags/
+  mkdirSync('flags', { recursive: true });
+  await Promise.all(countries.map(async c => {
+    try {
+      const url = `https://flagcdn.com/16x12/${c.code.toLowerCase()}.png`;
+      const res = await fetch(url);
+      if (res.ok) {
+        const buffer = Buffer.from(await res.arrayBuffer());
+        writeFileSync(`flags/${c.code.toLowerCase()}.png`, buffer);
+      }
+    } catch (e) {
+      // 忽略单个错误
+    }
+  }));
 
-console.log('countries.js + 254 PNG 已生成');
+  console.log('countries.js 和 flags 已生成（拨号前缀来自 restcountries）');
+})();
