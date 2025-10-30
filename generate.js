@@ -516,15 +516,17 @@ function flagEmoji(code) {
   return String.fromCodePoint(...code.split('').map(c => 0x1F1E6 + c.charCodeAt(0) - 65));
 }
 
-function buildFormatFunctions(pattern, maxLength, placeholder) {
-  const groups = pattern.match(/\\d\{(\d+)\}/g).map(g => parseInt(g.match(/\{(\d+)\}/)[1]));
+function buildFormatFunctions(patternStr, maxLength, placeholder) {
+  // patternStr 是字符串形式的正则，如 "^(\\d{3})(\\d{4})(\\d{4})$"
+  const groups = (patternStr.match(/\\d\{(\\d+)\\}/g) || []).map(g => parseInt(g.match(/\\{(\\d+)\\}/)[1]));
   const total = groups.reduce((a, b) => a + b, 0);
 
   return {
-    pattern: new RegExp(pattern),
+    pattern: new RegExp(patternStr),
     format: `(number) => {
       const cleaned = number.replace(/\\D/g, '');
-      const match = cleaned.match(${pattern});
+      // 使用 new RegExp(...) 以生成代码中正确的正则对象
+      const match = cleaned.match(new RegExp(${JSON.stringify(patternStr)}));
       return match ? \`${groups.map((_, i) => `\${match[${i+1}]}`).join(' ')}\` : number;
     }`,
     formatInput: `(number) => {
